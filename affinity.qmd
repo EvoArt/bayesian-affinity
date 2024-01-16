@@ -11,6 +11,15 @@ format:
 
 # Bayesian Estimation of Cooccurrence *Affinity* with Dyadic Regression
 
+Arthur Newbury
+Centre for Ecology & Conservation
+College of Life and Environmental Sciences
+University of Exeter
+Penryn
+Cornwall
+TR10 9FE
+UK
+
 ## Abstract
 
 Estimating underlying cooccurrence relationships between pairs of species has long been a challenging task in ecology as the extent to which species actually cooccur is partially dependent on their prevalences. While recent work has taken large steps towards solving this problem, the next question is how to assess the factors that influence cooccurrence. Here I show that a recently proposed cooccurrence metric can be improved upon by assigning Bayesian priors to the latent cooccurrence relationships being estimated. In the context of analysing the factors that affect cooccurrence relationships, I demonstrate the need for a generalised linear model (GLM) that takes cooccurrences and species prevalences (not cooccurrence metrics) as it's data. Finally, I show the form that such a GLM should take in order to perform Bayesian inference while accounting for non-independence of dyadic matrix data (e.g. distance and cooccurrence matrices).
