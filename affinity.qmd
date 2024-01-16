@@ -11,13 +11,13 @@ format:
 
 # Bayesian Estimation of Cooccurrence *Affinity* with Dyadic Regression
 
-Arthur Newbury
-Centre for Ecology & Conservation
-College of Life and Environmental Sciences
-University of Exeter
-Penryn
-Cornwall
-TR10 9FE
+Arthur Newbury:
+Centre for Ecology & Conservation,
+College of Life and Environmental Sciences,
+University of Exeter,
+Penryn,
+Cornwall,
+TR10 9FE,
 UK
 
 ## Abstract
