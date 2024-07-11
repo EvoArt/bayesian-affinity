@@ -1,6 +1,4 @@
 [deps]
-GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
-Optim = "429524aa-4258-5aef-a3af-852621145aeb"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 RCall = "6f49c342-dc21-5d91-9882-a32aef131414"
-Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-Turing = "fce5fe82-541a-59a6-adf8-730c64b5f9a0"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
