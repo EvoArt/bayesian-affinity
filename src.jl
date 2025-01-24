@@ -1,4 +1,4 @@
-using Turing, Optim, RCall, GLMakie, Random
+using Turing, Optim, RCall, GLMakie, Random, CairoMakie
 Random.seed!(123)
 R"library(CooccurrenceAffinity)"
 
@@ -40,23 +40,31 @@ for mA in [5,15,25]
         end
     end
 end
-
+c3 ="#b2d5eb"
+c3 ="#41b199"
+c1 ="#f5c12f"
+c2 ="#e13228"
 # Plot Figure 1
 fig = Figure()
 for (j,mB) in enumerate([1,5,10,15,25,29])
     for (i,mA) in enumerate([5,15,25])
         mask = (ma .== mA) .& (mb .== mB)
         rmser = round(rmse(x[mask],ry[mask]), sigdigits=3)
-        rmset = round(rmse(x[mask],ty[mask]), sigdigits=3)    
+        rmset = round(rmse(x[mask],ty[mask]), sigdigits=3) 
+        rp = randperm(2sum(mask))   
 
     ax = Axis(fig[i,j], title = "mA = $mA, mB = $mB\nRMSEmle = $rmser\nRMSEmap = $rmset",
                 xlabel = "Affinity", ylabel = "Estimated affinity")
-    scatter!(ax,x[mask],ry[mask], color =:transparent,
-        strokecolor = (:blue,0.6), strokewidth = 1)
-    scatter!(ax,x[mask],ty[mask], color = :transparent,marker = :rect,
-        strokecolor = (:red,0.4), strokewidth = 1)
-    
-    lines!(-2:2,-2:2,color = :black)
+                clr = vcat(fill(c1,sum(mask))...,fill(c2,sum(mask))...)
+                scatter!(ax,vcat(x[mask]...,x[mask]...)[rp] ,vcat(ry[mask]...,ty[mask]...)[rp], alpha = 0.5, color = clr[rp],
+        strokecolor = clr[rp],strokewidth = 0.5, markersize = 7)
+        #=
+    scatter!(ax,x[mask] .+randn(sum(mask)) ./10,ry[mask], color =(c1,0.1),
+        strokecolor = (c1,0.5), strokewidth = 2)
+    scatter!(ax,x[mask] .+randn(sum(mask)) ./10,ty[mask], color = (c2,0.1),marker = :rect,
+        strokecolor = (c2,0.5), strokewidth = 2)
+        =#
+    lines!(-2:2,-2:2,color = :black,linewidth = 4)
     if i < 3
         hidexdecorations!(ax)
     else
@@ -138,16 +146,16 @@ end
 fig = Figure()
 ax1 = Axis(fig[1,1], title = "MLE", xlabel = "β actual", 
                     ylabel = "β estimate", xticks = -3:3, yticks = -5:5)
-scatter!(ax1,b,regr)
-lines!(ax1,b,b, color = :black)
+lines!(ax1,b,b, color = :black, linewidth = 4)
+scatter!(ax1,b,regr,color = c1)
 hideydecorations!(ax1, ticks = false, label = false, ticklabels=false)
 ax2 = Axis(fig[1,2], title = "MAP", xlabel = "β actual", ylabel = "β estimate", xticks = -3:3)
-scatter!(ax2,b,regt)
-lines!(ax2,b,b, color = :black)
+lines!(ax2,b,b, color = :black, linewidth = 4)
+scatter!(ax2,b,regt,color = c2)
 hideydecorations!(ax2)
 ax3 = Axis(fig[1,3], title = "GLM", xlabel = "β actual", ylabel = "β estimate", xticks = -3:3)
-scatter!(ax3,b,regb)
-lines!(ax3,b,b, color = :black)
+lines!(ax3,b,b, color = :black, linewidth = 4)
+scatter!(ax3,b,regb,color = c3)
 hideydecorations!(ax3)
 hidexdecorations!.(fig.content, ticks = false, ticklabels = false, label = false)
 linkaxes!(fig.content...)
