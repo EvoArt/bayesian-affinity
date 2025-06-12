@@ -1,0 +1,21 @@
+---
+engine: julia
+---
+```{julia}
+using Turing, Memoization, CSV,DataFrames,DelimitedFiles, Random
+import Logging
+Logging.disable_logging(Logging.Info)
+include("utils.jl")
+Random.seed!(321)
+```
+
+```{julia}
+df = CSV.read("fibrosis_Genus_PA.csv",DataFrame)[:,3:end]
+PA = Array(df)
+```
+
+```{julia}
+confidence,affinity_estimates = individual_alpha(PA)
+writedlm("results/publication_conf.csv",confidence)
+writedlm("results/publication_est.csv",affinity_estimates)
+```

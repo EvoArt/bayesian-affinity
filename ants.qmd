@@ -1,0 +1,244 @@
+```{julia}
+using  CSV,DataFrames, DelimitedFiles, Chain, DataFrameMacros, GLMakie
+using Turing, Random,LinearAlgebra,Colors
+import ADTypes, Mooncake
+include("utils.jl")
+c4 ="#b1292c"
+c3 ="#1B6AA5"#"#f38b30"
+c1 ="#f5c12f"
+c2 ="#e13228"
+c4 =RGB(([0,47,74] ./255)...)
+cmap =(c1,c2,c3,c4)
+n_iter,n_chn = 1000,8
+```
+
+```{julia}
+PA_df = CSV.read("ants.csv",DataFrame)
+invader = "Solenopsis_invicta"
+PA_df = @chain CSV.read("ants.csv",DataFrame) begin
+        @select({Not(invader,:Code)})
+        @select(:sites,:treatment, {Not(:sites,:treatment)} >0)
+        @groupby(:sites,:treatment)
+        end
+names
+traits = @subset(CSV.read("ant_trait.csv",DataFrame), :sp != invader)
+#checkspecies are in same order in both dataframes
+sortperm(names(PA_df)[3:end]) == sortperm(traits.sp) #true
+#taxa = [join(split(name,"_")[1:2],".") for name in names(PA_df)[3:end]]
+n_trait = size(traits,2)-1
+n_obs = size(traits,1)
+
+Xs = zeros(n_trait,n_obs,n_obs)
+for i in 1:n_trait
+    Xs[i,1:end,1:end] .= scale_center(gower(traits[:,i+1]))
+end
+X = zeros(1,n_obs,n_obs)
+X[1,1:end,1:end] .= scale_center(gower(Array(traits[:,2:end])))
+
+```
+
+```{julia}
+
+@model function reg2(Xs,k, n_obs,N,m, n_pred = size(Xs,1))
+    # Priors
+
+    λ2 ~ filldist(Normal(),n_obs)
+    β ~ filldist(Normal(),n_pred)
+
+    a ~ Normal(0.0,4.0)
+    lp = 0.0
+    for j in 1:n_obs-1
+        mB = m[j]
+        for i in j+1:n_obs
+            mA = m[i]
+            if (0<mA<N) & (0<mB<N)
+                μ = a+λ2[i] +λ2[j]
+                for pred in 1:n_pred
+                    μ += β[pred]*Xs[pred,i,j] 
+                end
+                lp+=  my_logpdf(mA,N-mA,mB,exp(μ),k[i,j])
+            end
+        end
+    end
+    Turing.@addlogprob! lp
+
+    return (β)
+end
+
+
+@model function reg3(Xs,P)
+n_pred = size(Xs,1)
+    # Priors
+    β ~ filldist(Normal(),n_pred)
+    λ2 ~ filldist(Normal(),n_obs,4)
+
+    a ~ filldist(Normal(0.0,4.0),length(P))
+    lp = 0.0
+    for (trt,p) in enumerate(P)
+        k, n_obs,N,m = p
+        for j in 1:n_obs-1
+            mB = m[j]
+            for i in j+1:n_obs
+                mA = m[i]
+                if (0<mA<N) & (0<mB<N)
+                    μ = a[trt]+λ2[i,trt] +λ2[j,trt]
+                    for pred in 1:n_pred
+                        μ += β[pred]*Xs[pred,i,j] 
+                    end
+                    lp+=  my_logpdf(mA,N-mA,mB,exp(μ),k[i,j])
+                end
+            end
+        end
+    end
+    Turing.@addlogprob! lp
+
+    return (β)
+end
+
+
+
+```
+
+```{julia}
+P= []
+for trt in eachindex(PA_df)
+    
+    pa = Array(PA_df[trt][:,3:end]) .>0
+    #mask = [in(taxon,global_PA_df.taxa) for taxon in taxa]
+    #pa = pa[:,mask]
+    n_sample, n_obs = size(pa)
+    k = zeros(Int64, n_obs,n_obs)
+    for i in 2:n_obs
+        for j in 1:i-1
+            k[i,j] = sum(pa[:,i] .* pa[:,j])
+        end
+    end
+    params = k, n_obs,n_sample, vec(sum(pa, dims = 1))#,map_est
+    push!(P,params)
+end
+P = Tuple.(P)
+
+```
+
+```{julia}
+local_mod = reg3(Xs,P)
+ant_local_chn =  sample(local_mod,NUTS(100,0.65; adtype=ADTypes.AutoMooncake(config=nothing)),MCMCThreads(),n_iter,n_chn);
+CSV.write("ant_local_chn.csv", DataFrame(ant_local_chn))
+group(ant_local_chn,:β)
+```
+```{julia}
+fig = Figure()
+ax = Axis(fig[1,1],yticks = (1:n_trait,names(traits)[2:end]))
+vlines!(ax,[0.0], color = :black, linestyle = :dash)
+for (i,trait) in enumerate(names(traits)[2:end])
+    violin!(ax,fill(i,n_iter*n_chn),vec(ant_local_chn["β[$(i)]"]),orientation = :horizontal,strokewidth = 2, strokecolor = (:black,0.9), color = (c2,0.7),side = :left,label = "Local")
+end
+fig
+```
+
+
+```{julia}
+
+traits_taxa = @transform(traits,:genus = split(:sp,"_")[1],:species = split(:sp,"_")[2])
+global_PA_df = @chain CSV.read("global_ants.csv",DataFrame) begin
+    @transform(:genus = split(:Column1,".")[1],:species = split(:Column1,".")[2])
+    innerjoin(traits_taxa, on = [:genus,:species])
+    @select(:taxa =:Column1, {Not(:sp,:Column1)})
+end
+global_traits= @select(global_PA_df,:size,:leg,:head,:mand,:pron,:scap,:eye)
+global_PA= Array(@select(global_PA_df,{Not(:taxa,:size,:leg,:head,:mand,:pron,:scap,:eye,:genus,:species)}))
+n_obs = size(global_PA,1)
+global_PA = transpose(global_PA[:, 0 .< sum.(eachcol(global_PA))])
+n_sample = size(global_PA,1)
+```
+
+
+```{julia}
+k = zeros(Int64, n_obs,n_obs)
+for i in 2:n_obs
+    for j in 1:i-1
+        k[i,j] = sum(global_PA[:,i] .* global_PA[:,j])
+    end
+end
+params = k, n_obs,n_sample, vec(sum(global_PA, dims = 1))
+Xs = zeros(n_trait,n_obs,n_obs)
+for i in 1:n_trait
+    Xs[i,1:end,1:end] .= scale_center(gower(global_traits[:,i]))
+end
+X = zeros(1,n_obs,n_obs)
+X[1,1:end,1:end] .= scale_center(gower(Array(global_traits[:,1:end])))
+
+```
+
+```{julia}
+global_mod = reg2(Xs,params...)
+ant_global_chn =  sample(global_mod,NUTS(100,0.65; adtype=ADTypes.AutoMooncake(config=nothing)),MCMCThreads(),n_iter,n_chn);
+CSV.write("ant_global_chn.csv", DataFrame(ant_global_chn))
+group(ant_global_chn,:β)
+```
+
+
+
+```{julia}
+for (i,trait) in enumerate(names(traits)[2:end])
+    violin!(ax,fill(i,n_iter*n_chn),vec(ant_global_chn["β[$(i)]"]),orientation = :horizontal,strokewidth = 2, strokecolor = (:black,0.9), color = (c1,0.7),side = :right,label = "Global")
+    Legend(fig[1, 1],
+       [MarkerElement(color = c, marker = :rect, markersize = 15) for c in cmap[[2,1]]],
+       ["Local","Global"],
+       "Regression coefficients",
+       tellheight = false,
+        tellwidth = false,
+        margin = (10, 10, 10, 10),
+        halign = :right, 
+        valign = :bottom)
+end
+fig
+```
+
+
+```{julia}
+using Phylo
+tree = open(parsenewick, "15k_NCuniform_crown_mcc.tre")
+phydist = zeros(n_obs,n_obs)
+for j in 2:n_obs
+    for i in 1:j-1
+        d =distance(tree,global_PA_df.taxa[i],global_PA_df.taxa[j])
+        phydist[i,j] = d
+        phydist[j,i] = d
+    end
+end
+phydist = scale_center(sqrt.(phydist))
+
+Xs = zeros(n_trait+1,n_obs,n_obs)
+for i in 1:n_trait
+    Xs[i,1:end,1:end] .= scale_center(gower(global_traits[:,i]))
+end
+Xs[end,1:end,1:end] .=phydist
+X = zeros(2,n_obs,n_obs)
+X[1,1:end,1:end] .= scale_center(gower(Array(global_traits[:,1:end])))
+X[end,1:end,1:end] .=phydist
+
+```
+
+
+```{julia}
+phylo_mod = reg2(Xs,params...)
+phylo_chn =  sample(phylo_mod,NUTS(100,0.65; adtype=ADTypes.AutoMooncake(config=nothing)),MCMCThreads(),n_iter,n_chn);
+CSV.write("ant_phylo_chn.csv", DataFrame(ant_local_chn))
+group(phylo_chn,:β)
+```
+
+
+
+```{julia.}
+for i in 1:n_trait+1
+    violin!(ax,fill(i,n_iter*n_chn),vec(phylo_chn["β[$(i)]"]),orientation = :horizontal,strokewidth = 2, strokecolor = (:black,0.9),color = (c1,0.7),side = :right,label = "Phylo")
+end
+```
+
+
+
+```{julia}
+
+```
+

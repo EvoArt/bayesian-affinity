@@ -1,0 +1,194 @@
+---
+engine: julia
+---
+
+# Load packages and utility functions
+```{julia}
+using  CSV,DataFrames, DelimitedFiles, Chain
+using Turing, Random,LinearAlgebra
+import ADTypes, Mooncake
+Random.seed!(321)
+n_iter, n_chn = 1000,8
+include("utils.jl")
+```
+
+# Load and process data
+
+```{julia}
+readdlm("beetles.csv",',')
+altitudes = 1400:-100:800
+PA = @chain readdlm("beetles.csv",',')[3:end,4:end] .> 0 begin
+        condense(3)
+        transpose()
+        end
+
+taxa, beetle_group,beetle_size = eachcol(readdlm("beetles.csv",',')[3:end,1:3])
+genera = [split(taxon," ")[1] for taxon in taxa]
+dist = gower(beetle_group,beetle_size)
+group_dist,size_dist = gower.([beetle_group,beetle_size])
+```
+
+## Convert presence/absence data to variables/parameters used in the models
+```{julia}
+params_list= []
+for group in unique(beetle_group)
+    inds = group .== beetle_group
+    pa = PA[:,inds]
+    sub_dist = scale_center(size_dist[inds,inds])
+    n_sample, n_obs = size(pa)
+    k = zeros(Int64, n_obs,n_obs)
+    for i in 2:n_obs
+        for j in 1:i-1
+            k[i,j] = sum(pa[:,i] .* pa[:,j])
+        end
+    end
+    params = sub_dist,k, n_obs,n_sample, vec(sum(pa, dims = 1))
+    push!(params_list,params)
+end
+params_list = Tuple.(params_list)
+
+n_sample, n_obs = size(PA)
+k = zeros(Int64, n_obs,n_obs)
+for i in 2:n_obs
+    for j in 1:i-1
+        k[i,j] = sum(PA[:,i] .* PA[:,j])
+    end
+end
+params = scale_center(dist),k, n_obs,n_sample, vec(sum(PA, dims = 1))
+interaction_params = scale_center(size_dist),group_dist,k, n_obs,n_sample, vec(sum(PA, dims = 1))
+N_OBS = size(dist,1)
+```
+
+# Define models
+
+Model 1
+
+$$
+\begin{aligned}
+K_{ij} &\sim \text{fnchypg}(\vec{m}_{i},N-\vec{m}_{i},\vec{m}_{j},e^{\alpha})\\
+\alpha &= \beta_{0} + \lambda_{i} + \lambda_{j} + \beta X_{ij}\\
+\beta &\sim \text{N}(0,1)\\
+\beta_{0} &\sim \text{N}(0,4)\\
+\lambda_{i} &\sim \text{N}(0,1).\\
+\end{aligned}
+$$ 
+
+```{julia}
+@model function basic_model(X,k, n_obs,N,m)
+    λ ~ filldist(Normal(0.0,1.0),n_obs)
+    β ~ Normal(0.0,1.0)
+    β₀ ~ Normal(0.0,4.0)
+    lp = 0.0
+    for j in 1:n_obs-1
+        mB = m[j]
+        for i in j+1:n_obs
+            mA = m[i]
+            α = β₀ + β * X[i,j] + λ[i] + λ[j]
+            lp +=  FNCH_logpdf(mA,N-mA,mB,exp(α),k[i,j])
+        end
+    end
+    Turing.@addlogprob! lp
+end
+
+```
+
+Model 2
+
+$$
+\begin{aligned}
+K_{ij} &\sim \text{fnchypg}(\vec{m}_{i},N-\vec{m}_{i},\vec{m}_{j},e^{\alpha})\\
+\alpha &= \beta_{0} + \lambda_{i} + \lambda_{j} + \beta_{1} X1_{ij} + \beta_{2} X2_{ij} + \beta_{3} X3_{ij}\\
+\beta_{k} &\sim \text{N}(0,1)\\
+\beta_{0} &\sim \text{N}(0,4)\\
+\lambda_{i} &\sim \text{N}(0,1),\\
+\end{aligned}
+$$ 
+
+where $X3$ = the element-wise product $X1 \odot X2$.
+
+```{julia}
+@model function interaction_model(X1,X2,k, n_obs,N,m)
+    λ ~ filldist(Normal(0.0,1.0),n_obs)
+    β ~ filldist(Normal(0.0,1.0),3)
+    β₀ ~ Normal(0.0,4.0)
+    lp = 0.0
+    for j in 1:n_obs-1
+        mB = m[j]
+        for i in j+1:n_obs
+            mA = m[i]
+            α = β₀ + β[1] * X1[i,j] + β[2] * X2[i,j] + β[3] * X1[i,j] * X2[i,j] + λ[i] + λ[j]
+            lp+=  FNCH_logpdf(mA,N-mA,mB,exp(α),k[i,j])
+        end
+    end
+    Turing.@addlogprob! lp
+end
+```
+
+Model 3
+
+$$
+\begin{aligned}
+K_{ij} &\sim \text{fnchypg}(\vec{m}_{i},N-\vec{m}_{i},\vec{m}_{j},e^{\alpha})\quad \text{for } (i,j) \in \mathcal{S}\\
+\alpha &= \beta_{0} + \lambda_{i} + \lambda_{j} + \beta X_{ij}\\
+\beta &\sim \text{N}(0,1)\\
+\beta_{0} &\sim \text{N}(0,4)\\
+\lambda_{i} &\sim \text{N}(0,1),\\
+\end{aligned}
+$$ 
+
+where $\mathcal{S} = \{(i,j) : g_{i} = g_{j}\}$ is the set of indices denoting species pairs from the same functional guild.
+
+```{julia}
+@model function size_within_guild_model(params_list,N_OBS,n = length(params_list))
+    β ~ Normal(0.0,1.0)
+    β₀ ~ Normal(0.0,4.0)
+    λ ~ filldist(Normal(0.0,1.0),N_OBS)
+    offs =0
+    for group in 1:n    
+        Turing.@addlogprob! sub_model(params_list[group]...,β,λ[1+offs:params_list[group][3]+offs],β₀)
+        offs+= params_list[group][3]
+    end
+end
+
+function sub_model(X,k, n_obs,N,m,β,λ,β₀)
+    lp = 0.0
+    for j in 1:n_obs-1
+        mB = m[j]
+        for i in j+1:n_obs
+            mA = m[i]
+            α = β₀ + β * X[i,j] + λ[i] + λ[j]
+            lp +=  FNCH_logpdf(mA,N-mA,mB,exp(α),k[i,j])
+        end
+    end
+    lp
+end
+```
+
+
+# Run inference and save results.
+
+Model 1
+```{julia}
+basic_mod = basic_model(params...)
+basic_chn =  sample(basic_mod,NUTS(100,0.65; adtype=ADTypes.AutoMooncake(config=nothing)),MCMCThreads(),n_iter,n_chn);
+CSV.write("results/beetle_gower_chn.csv", DataFrame(basic_chn))
+describe(group(basic_chn,:β))
+```
+
+Model 2
+
+```{julia}
+int_mod = interaction_model(interaction_params...)
+int_chn =  sample(int_mod,NUTS(100,0.65; adtype=ADTypes.AutoMooncake(config=nothing)),MCMCThreads(),n_iter,n_chn);
+CSV.write("results/beetle_interaction_chn.csv", DataFrame(int_chn))
+describe(group(int_chn,:β))
+```
+
+Model 3
+
+```{julia}
+size_within_guild_mod = size_within_guild_model(params_list,N_OBS)
+size_within_guild_chn =  sample(size_within_guild_mod,NUTS(100,0.65; adtype=ADTypes.AutoMooncake(config=nothing)),MCMCThreads(),n_iter,n_chn);
+CSV.write("results/beetle_size_within_chn.csv", DataFrame(size_within_guild_chn))
+describe(group(size_within_guild_chn,:β))
+```

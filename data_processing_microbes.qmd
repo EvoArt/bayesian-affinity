@@ -1,0 +1,45 @@
+
+---
+engine: julia
+---
+```{julia}
+using HDF5, CSV,FileIO,DataFrames,DataFrames, DelimitedFiles,AssignTaxonomy, Chain, DataFrameMacros,Random
+Random.seed!(321)
+include("utils.jl")
+```
+
+```{julia}
+ref_fasta = "rdp_train_set_16.fa"
+seq_fasta = "131964_reference-hit.seqs.fa"
+
+if isfile("fibrosis_taxa.csv")
+    taxa = CSV.read("fibrosis_taxa.csv",DataFrame)
+else
+    taxa = assign_taxonomy(seq_fasta,ref_fasta, n_bootstrap = 100)
+    CSV.write("fibrosis_taxa.csv",taxa)
+end
+gens = taxa.Genus;
+```
+
+```{julia}
+biom = load("131964_reference-hit.biom")
+PA_df,depth = obs_df(biom,gens)
+```
+
+```{julia}
+PA_df = PA_df[16000 .> depth .>8000,:]
+GPA_df = genus_df(PA_df,gens)
+PA_df = @chain CSV.read("samps.txt",DataFrame,delim ='\t') begin
+    @subset(:adult_pediatric == "adult", :description == "spu")
+    @groupby(:host_subject_id)
+    @combine(:sample_name = rand(:sample_name))
+    innerjoin(PA_df, on = :sample_name)
+    remove_empties()
+end
+GPA_df = leftjoin(PA_df[:,1:2],GPA_df,on = :sample_name)
+GPA_df = remove_empties(GPA_df)
+CSV.write("fibrosis_PA.csv",PA_df)
+CSV.write("fibrosis_Genus_PA.csv",GPA_df)
+```
+
+

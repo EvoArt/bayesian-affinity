@@ -1,0 +1,191 @@
+---
+engine: julia
+---
+# Load packages and utility functions
+```{julia}
+using  CSV,DataFrames, DelimitedFiles, Chain, DataFrameMacros
+using Turing, Random,LinearAlgebra
+import ADTypes, Mooncake
+Random.seed!(321)
+include("utils.jl")
+n_iter,n_chn = 1000,8
+```
+
+# Load and process data 
+
+## Local data
+
+```{julia}
+PA_df = CSV.read("ants.csv",DataFrame)
+invader = "Solenopsis_invicta"
+PA_df = @chain CSV.read("ants.csv",DataFrame) begin
+        @select({Not(invader,:Code)})
+        @select(:sites,:treatment, {Not(:sites,:treatment)} >0)
+        @groupby(:sites,:treatment) # grouped dataframe, split by site and treatment 
+        end
+names
+traits = @subset(CSV.read("ant_trait.csv",DataFrame), :sp != invader)
+#checkspecies are in same order in both dataframes
+sortperm(names(PA_df)[3:end]) == sortperm(traits.sp) #true
+```
+
+```{julia}
+n_trait = size(traits,2)-1
+n_obs = size(traits,1)
+Xs_local = zeros(n_trait,n_obs,n_obs)
+for i in 1:n_trait
+    Xs_local[i,1:end,1:end] .= scale_center(gower(traits[:,i+1]))
+end
+```
+
+### Convert local presence/absence data to variables/parameters used in the models
+
+```{julia}
+params_list = []
+for trt in eachindex(PA_df) # iterate over grouped data frame
+    pa = Array(PA_df[trt][:,3:end]) .>0
+    n_sample, n_obs = size(pa)
+    k = zeros(Int64, n_obs,n_obs)
+    for i in 2:n_obs
+        for j in 1:i-1
+            k[i,j] = sum(pa[:,i] .* pa[:,j])
+        end
+    end
+    params = k, n_obs,n_sample, vec(sum(pa, dims = 1))
+    push!(params_list,params)
+end
+params_list = Tuple.(params_list)
+```
+
+## Global data
+
+```{julia}
+traits_taxa = @transform(traits,:genus = split(:sp,"_")[1],:species = split(:sp,"_")[2])
+global_PA_df = @chain CSV.read("global_ants.csv",DataFrame) begin
+    @transform(:genus = split(:Column1,".")[1],:species = split(:Column1,".")[2])
+    innerjoin(traits_taxa, on = [:genus,:species])
+    @select(:taxa =:Column1, {Not(:sp,:Column1)})
+end
+global_traits= @select(global_PA_df,:size,:leg,:head,:mand,:pron,:scap,:eye)
+global_PA= Array(@select(global_PA_df,{Not(:taxa,:size,:leg,:head,:mand,:pron,:scap,:eye,:genus,:species)}))
+n_obs = size(global_PA,1)
+global_PA = transpose(global_PA[:, 0 .< sum.(eachcol(global_PA))])
+n_sample = size(global_PA,1)
+```
+
+```{julia}
+Xs_global = zeros(n_trait,n_obs,n_obs)
+for i in 1:n_trait
+    Xs_global[i,1:end,1:end] .= scale_center(gower(global_traits[:,i]))
+end
+```
+
+### Convert global data to variables/parameters used in the models
+
+```{julia}
+k = zeros(Int64, n_obs,n_obs)
+for i in 2:n_obs
+    for j in 1:i-1
+        k[i,j] = sum(global_PA[:,i] .* global_PA[:,j])
+    end
+end
+params = k, n_obs,n_sample, vec(sum(global_PA, dims = 1))
+```
+
+
+# Define models
+
+Local model
+
+$$
+\begin{aligned}
+K_{ijl} &\sim \text{fnchypg}(\vec{m}_{il},N_{l}-\vec{m}_{il},\vec{m}_{jl},e^{\alpha})\\
+\alpha &= \beta_{0_{l}} + \lambda_{il} + \lambda_{jl} + \sum_{k=1}^{n}\beta_{k} X_{k_{ijl}}\\
+\beta_{k} &\sim \text{N}(0,1)\\
+\beta_{0_{l}} &\sim \text{N}(0,4)\\
+\lambda_{il} &\sim \text{N}(0,1),\\
+\end{aligned}
+$$ 
+
+```{julia}
+
+@model function local_model(Xs,params_list)
+    n_obs = size(Xs,2)
+    n_pred = size(Xs,1)
+    β ~ filldist(Normal(),n_pred)
+    λ ~ filldist(Normal(),n_obs,4)
+    β₀ ~ filldist(Normal(0.0,4.0),length(params_list))
+
+    lp = 0.0
+    for (trt,p) in enumerate(params_list)
+        k, n_obs,N,m = p
+        for j in 1:n_obs-1
+            mB = m[j]
+            for i in j+1:n_obs
+                mA = m[i]
+                if (0<mA<N) & (0<mB<N)
+                    α = β₀[trt] + λ[i,trt] + λ[j,trt]
+                    for pred in 1:n_pred
+                        α += β[pred] * Xs[pred,i,j] 
+                    end
+                    lp +=  FNCH_logpdf(mA,N-mA,mB,exp(α),k[i,j])
+                end
+            end
+        end
+    end
+    Turing.@addlogprob! lp
+end
+```
+
+Global model
+$$
+\begin{aligned}
+K_{ij} &\sim \text{fnchypg}(\vec{m}_{i},N-\vec{m}_{i},\vec{m}_{j},e^{\alpha})\\
+\alpha &= \beta_{0} + \lambda_{i} + \lambda_{j} + \sum_{k=1}^{n}\beta_{k} X_{k_{ij}}\\
+\beta_{k} &\sim \text{N}(0,1)\\
+\beta_{0} &\sim \text{N}(0,4)\\
+\lambda_{i} &\sim \text{N}(0,1),\\
+\end{aligned}
+$$ 
+
+```{julia}
+
+@model function global_model(Xs,k, n_obs,N,m, n_pred = size(Xs,1))
+    λ ~ filldist(Normal(),n_obs)
+    β ~ filldist(Normal(),n_pred)
+    β₀ ~ Normal(0.0,4.0)
+
+    lp = 0.0
+    for j in 1:n_obs-1
+        mB = m[j]
+        for i in j+1:n_obs
+            mA = m[i]
+            if (0<mA<N) & (0<mB<N)
+                α = β₀ + λ[i] + λ[j]
+                for pred in 1:n_pred
+                    α += β[pred] * Xs[pred,i,j] 
+                end
+                lp+=  FNCH_logpdf(mA,N-mA,mB,exp(α),k[i,j])
+            end
+        end
+    end
+    Turing.@addlogprob! lp
+end
+```
+
+# Run inference and save results.
+
+```{julia}
+local_mod = local_model(Xs_local,params_list)
+ant_local_chn =  sample(local_mod,NUTS(100,0.65; adtype=ADTypes.AutoMooncake(config=nothing)),MCMCThreads(),n_iter,n_chn);
+CSV.write("results/ant_local_chn.csv", DataFrame(ant_local_chn))
+describe(group(ant_local_chn,:β))
+```
+
+```{julia}
+global_mod = global_model(Xs_global,params...)
+ant_global_chn =  sample(global_mod,NUTS(100,0.65; adtype=ADTypes.AutoMooncake(config=nothing)),MCMCThreads(),n_iter,n_chn);
+CSV.write("results/ant_global_chn.csv", DataFrame(ant_global_chn))
+describe(group(ant_global_chn,:β))
+```
+
