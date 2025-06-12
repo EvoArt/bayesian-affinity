@@ -13,7 +13,7 @@ All data, intermediate and final results are contained in this repository. Howev
 
 The results shown in Figure 3 of the manuscript can be obtained by running beetles.qmd.
 
-The results shown in Figure 4 of the manuscript can be obtained by running ants_traits.qmd, ants_phylo.jl, ants_genus.jl and ants_species.jl, in that order.
+The results shown in Figure 4 of the manuscript can be obtained by running ants_traits.qmd, ants_dist.jl, ants_genus.jl and ants_species.jl, in that order.
 
 The results shown in Figure 5 of the manuscript can be obtained by running data_processing_microbes.qmd and microbes.qmd, in that order.
 
